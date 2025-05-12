@@ -22,13 +22,13 @@ public class SSLCheckService {
             URI uri = new URI(inputUrl);
             URL url = uri.toURL();
 
-            // Temporarily trust all certs to fetch the chain
+            // Step 1: Fetch certs (trust all temporarily)
             SSLContext sslContext = SSLContext.getInstance("TLS");
             sslContext.init(null, getTrustAllManagers(), new SecureRandom());
 
             HttpsURLConnection conn = (HttpsURLConnection) url.openConnection();
             conn.setSSLSocketFactory(sslContext.getSocketFactory());
-            conn.setHostnameVerifier((hostname, session) -> true); // Bypass hostname check
+            conn.setHostnameVerifier((hostname, session) -> true);
             conn.setConnectTimeout(4000);
             conn.setReadTimeout(4000);
             conn.connect();
@@ -38,17 +38,17 @@ public class SSLCheckService {
 
             if (certs.length == 0) return false;
 
-            // Convert to X509Certificate array
+            // Step 2: Convert to X509 chain
             X509Certificate[] chain = Arrays.stream(certs)
                 .filter(c -> c instanceof X509Certificate)
                 .toArray(X509Certificate[]::new);
 
-            // Load system truststore
-            KeyStore trustStore = KeyStore.getInstance(KeyStore.getDefaultType());
-            trustStore.load(null, null); // Loads default cacerts
+            // Step 3: DFS traversal
+            KeyStore trustStore = loadSystemTrustStore();
+            X509Certificate start = chain[0];
+            Set<X509Certificate> visited = new HashSet<>();
 
-            // DFS Validation
-            return validateWithDFS(chain[0], chain, trustStore, new HashSet<>());
+            return dfsCheck(start, chain, trustStore, visited);
 
         } catch (Exception e) {
             System.err.println("SSL Check Failed: " + e.getMessage());
@@ -56,59 +56,59 @@ public class SSLCheckService {
         }
     }
 
-    /**
-     * DFS-based validation with truststore checking.
-     */
-    private boolean validateWithDFS(
+    private boolean dfsCheck(
         X509Certificate current,
         X509Certificate[] chain,
         KeyStore trustStore,
         Set<X509Certificate> visited
     ) throws Exception {
-        // Base case: Found a trusted root CA
+        if (visited.contains(current)) return false;
+        visited.add(current);
+
+        // ✅ Base case: trusted root cert
         if (isTrustedRoot(current, trustStore)) {
             return true;
         }
 
-        // Prevent cycles
-        if (visited.contains(current)) return false;
-        visited.add(current);
-
-        // Recursive case: Check all possible issuers
+        // 🔁 DFS: find issuer in chain
         for (X509Certificate cert : chain) {
             if (isIssuer(current, cert)) {
-                if (validateWithDFS(cert, chain, trustStore, visited)) {
-                    return true;
-                }
+                if (dfsCheck(cert, chain, trustStore, visited)) return true;
             }
         }
 
         return false;
     }
 
-    /**
-     * Checks if a certificate is a trusted root CA.
-     */
+    private boolean isIssuer(X509Certificate child, X509Certificate parent) {
+        return child.getIssuerX500Principal().equals(parent.getSubjectX500Principal());
+    }
+
     private boolean isTrustedRoot(X509Certificate cert, KeyStore trustStore) throws Exception {
-        // Check if the cert is self-signed
-        if (!cert.getSubjectX500Principal().equals(cert.getIssuerX500Principal())) {
-            return false;
+        if (!cert.getSubjectX500Principal().equals(cert.getIssuerX500Principal())) return false;
+
+        TrustManagerFactory tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
+        tmf.init(trustStore);
+
+        for (TrustManager tm : tmf.getTrustManagers()) {
+            if (tm instanceof X509TrustManager) {
+                try {
+                    ((X509TrustManager) tm).checkServerTrusted(new X509Certificate[]{cert}, "RSA");
+                    return true;
+                } catch (CertificateException e) {
+                    return false;
+                }
+            }
         }
-
-        // Check if the root CA is in the truststore
-        return trustStore.getCertificateAlias(cert) != null;
+        return false;
     }
 
-    /**
-     * Checks if 'potentialIssuer' issued 'child'.
-     */
-    private boolean isIssuer(X509Certificate child, X509Certificate potentialIssuer) {
-        return child.getIssuerX500Principal().equals(potentialIssuer.getSubjectX500Principal());
+    private KeyStore loadSystemTrustStore() throws Exception {
+        KeyStore trustStore = KeyStore.getInstance(KeyStore.getDefaultType());
+        trustStore.load(null, null); // Loads default system truststore (cacerts)
+        return trustStore;
     }
 
-    /**
-     * TEMPORARY: Trust all certificates (for fetching only).
-     */
     private TrustManager[] getTrustAllManagers() {
         return new TrustManager[] {
             new X509TrustManager() {
