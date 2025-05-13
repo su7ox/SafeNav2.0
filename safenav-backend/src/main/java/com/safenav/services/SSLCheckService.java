@@ -15,6 +15,7 @@ public class SSLCheckService {
 
     public boolean checkSSL(String inputUrl) {
         try {
+            // Normalize input
             if (!inputUrl.startsWith("https://")) {
                 inputUrl = "https://" + inputUrl;
             }
@@ -22,33 +23,32 @@ public class SSLCheckService {
             URI uri = new URI(inputUrl);
             URL url = uri.toURL();
 
-            // Step 1: Fetch certs (trust all temporarily)
+            // Step 1: Temporarily trust all certs to fetch chain
             SSLContext sslContext = SSLContext.getInstance("TLS");
-            sslContext.init(null, getTrustAllManagers(), new SecureRandom());
+            sslContext.init(null, trustAllManagers(), new SecureRandom());
 
             HttpsURLConnection conn = (HttpsURLConnection) url.openConnection();
             conn.setSSLSocketFactory(sslContext.getSocketFactory());
             conn.setHostnameVerifier((hostname, session) -> true);
-            conn.setConnectTimeout(4000);
-            conn.setReadTimeout(4000);
+            conn.setConnectTimeout(5000);
+            conn.setReadTimeout(5000);
             conn.connect();
 
             Certificate[] certs = conn.getServerCertificates();
             conn.disconnect();
 
-            if (certs.length == 0) return false;
+            // Step 2: Convert to X509Certificate[]
+            List<X509Certificate> chainList = new ArrayList<>();
+            for (Certificate cert : certs) {
+                if (cert instanceof X509Certificate) {
+                    chainList.add((X509Certificate) cert);
+                }
+            }
 
-            // Step 2: Convert to X509 chain
-            X509Certificate[] chain = Arrays.stream(certs)
-                .filter(c -> c instanceof X509Certificate)
-                .toArray(X509Certificate[]::new);
+            if (chainList.isEmpty()) return false;
 
-            // Step 3: DFS traversal
-            KeyStore trustStore = loadSystemTrustStore();
-            X509Certificate start = chain[0];
-            Set<X509Certificate> visited = new HashSet<>();
-
-            return dfsCheck(start, chain, trustStore, visited);
+            // Step 3: Validate using DFS traversal
+            return validateWithDFS(chainList);
 
         } catch (Exception e) {
             System.err.println("SSL Check Failed: " + e.getMessage());
@@ -56,64 +56,72 @@ public class SSLCheckService {
         }
     }
 
-    private boolean dfsCheck(
+    // ---------------------------------
+    // DFS-based cert chain validation
+    // ---------------------------------
+    private boolean validateWithDFS(List<X509Certificate> chain) {
+        try {
+            // Load default truststore
+            KeyStore trustStore = KeyStore.getInstance(KeyStore.getDefaultType());
+            trustStore.load(null, null);
+
+            // Setup CertPathValidator
+            CertPathValidator validator = CertPathValidator.getInstance("PKIX");
+            CertificateFactory certFactory = CertificateFactory.getInstance("X.509");
+            PKIXParameters params = new PKIXParameters(trustStore);
+            params.setRevocationEnabled(false); // Skip CRL/OCSP for demo
+
+            // DFS: try to build a valid path from chain
+            Set<X509Certificate> visited = new HashSet<>();
+            return dfsValidate(chain.get(0), chain, visited, certFactory, validator, params);
+
+        } catch (Exception e) {
+            System.err.println("DFS Validation Failed: " + e.getMessage());
+            return false;
+        }
+    }
+
+    private boolean dfsValidate(
         X509Certificate current,
-        X509Certificate[] chain,
-        KeyStore trustStore,
-        Set<X509Certificate> visited
-    ) throws Exception {
-        if (visited.contains(current)) return false;
-        visited.add(current);
+        List<X509Certificate> fullChain,
+        Set<X509Certificate> visited,
+        CertificateFactory certFactory,
+        CertPathValidator validator,
+        PKIXParameters params
+    ) {
+        try {
+            if (visited.contains(current)) return false;
+            visited.add(current);
 
-        // ✅ Base case: trusted root cert
-        if (isTrustedRoot(current, trustStore)) {
+            // Build potential path from current cert
+            List<X509Certificate> path = new ArrayList<>();
+            path.add(current);
+            CertPath certPath = certFactory.generateCertPath(path);
+            validator.validate(certPath, params); // ✅ Trusted root
             return true;
-        }
 
-        // 🔁 DFS: find issuer in chain
-        for (X509Certificate cert : chain) {
-            if (isIssuer(current, cert)) {
-                if (dfsCheck(cert, chain, trustStore, visited)) return true;
-            }
-        }
-
-        return false;
-    }
-
-    private boolean isIssuer(X509Certificate child, X509Certificate parent) {
-        return child.getIssuerX500Principal().equals(parent.getSubjectX500Principal());
-    }
-
-    private boolean isTrustedRoot(X509Certificate cert, KeyStore trustStore) throws Exception {
-        if (!cert.getSubjectX500Principal().equals(cert.getIssuerX500Principal())) return false;
-
-        TrustManagerFactory tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
-        tmf.init(trustStore);
-
-        for (TrustManager tm : tmf.getTrustManagers()) {
-            if (tm instanceof X509TrustManager) {
-                try {
-                    ((X509TrustManager) tm).checkServerTrusted(new X509Certificate[]{cert}, "RSA");
-                    return true;
-                } catch (CertificateException e) {
-                    return false;
+        } catch (Exception ignored) {
+            // Try DFS to find a trusted parent
+            for (X509Certificate next : fullChain) {
+                if (!visited.contains(next) &&
+                    current.getIssuerX500Principal().equals(next.getSubjectX500Principal())) {
+                    if (dfsValidate(next, fullChain, visited, certFactory, validator, params)) {
+                        return true;
+                    }
                 }
             }
+            return false;
         }
-        return false;
     }
 
-    private KeyStore loadSystemTrustStore() throws Exception {
-        KeyStore trustStore = KeyStore.getInstance(KeyStore.getDefaultType());
-        trustStore.load(null, null); // Loads default system truststore (cacerts)
-        return trustStore;
-    }
-
-    private TrustManager[] getTrustAllManagers() {
-        return new TrustManager[] {
+    // ---------------------------------
+    // Trust all manager (for fetching)
+    // ---------------------------------
+    private TrustManager[] trustAllManagers() {
+        return new TrustManager[]{
             new X509TrustManager() {
-                public void checkClientTrusted(X509Certificate[] chain, String authType) {}
-                public void checkServerTrusted(X509Certificate[] chain, String authType) {}
+                public void checkClientTrusted(X509Certificate[] xcs, String string) {}
+                public void checkServerTrusted(X509Certificate[] xcs, String string) {}
                 public X509Certificate[] getAcceptedIssuers() { return new X509Certificate[0]; }
             }
         };
