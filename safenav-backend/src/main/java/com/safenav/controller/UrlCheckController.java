@@ -18,31 +18,40 @@ public class UrlCheckController {
     @Autowired
     private RiskCalculatorService riskCalculatorService;
 
-    @PostMapping("/check")
-    public UrlResponse checkUrl(@RequestBody UrlRequest request) {
-        String url = request.getUrl();
+   @PostMapping("/check")
+public UrlResponse checkUrl(@RequestBody UrlRequest request) {
+    String url = request.getUrl();
 
-        boolean sslSafe = sslCheckService.checkSSL(url);
-        int riskScore = riskCalculatorService.calculateRisk(sslSafe);
+    // 1. Run SSL check
+    boolean sslSafe = sslCheckService.checkSSL(url);
+    int sslScore = sslSafe ? 90 : 40;
 
-        UrlResponse response = new UrlResponse();
-        response.setSafe(riskScore < 50);
-        response.setRiskScore(riskScore);
-        response.setMessage(riskScore < 50 ? "URL is Safe" : "URL is Risky");
+    // 2. TEMP phishing and domain logic
+    int phishingScore = 10; // dummy placeholder
+    String domainReputation = "Good"; // dummy placeholder
 
-        response.setSslScore(sslSafe ? 90 : 40); // Example logic
-        response.setPhishingScore(riskScore); // Example: later can improve
-        response.setDomainReputation(sslSafe ? "Good" : "Bad");
+    // 3. Compute combined risk score (you can adjust weights later)
+    int riskScore = (sslSafe ? 20 : 80) + phishingScore;
+    riskScore = Math.min(riskScore, 100); // cap it to 100
 
-        if (riskScore < 30) {
-            response.setFinalVerdict("Safe");
-        } else if (riskScore < 60) {
-            response.setFinalVerdict("Suspicious");
-        } else {
-            response.setFinalVerdict("Dangerous");
-        }
-        
+    // 4. Prepare response
+    UrlResponse response = new UrlResponse();
+    response.setSafe(riskScore < 50);
+    response.setRiskScore(riskScore);
+    response.setMessage(riskScore < 50 ? "URL is Safe" : "URL is Risky");
+    response.setSslScore(sslScore);
+    response.setPhishingScore(phishingScore);
+    response.setDomainReputation(domainReputation);
 
-        return response;
+    // 5. Verdict
+    if (riskScore < 30) {
+        response.setFinalVerdict("Safe");
+    } else if (riskScore < 60) {
+        response.setFinalVerdict("Suspicious");
+    } else {
+        response.setFinalVerdict("Dangerous");
     }
+
+    return response;
+}
 }
