@@ -1,0 +1,6 @@
+# Updated hourly from global threat feeds
+phishing-network.xyz
+malware-distribution.center
+fake-login.microsoft-online.cc
+google-account-recovery.pro
+bankofamerica-scam.com

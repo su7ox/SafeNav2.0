@@ -1,0 +1,4 @@
+Root Domain,Associated Domain1,Associated Domain2
+google.com,mail.google.com,drive.google.com,accounts.google.com
+microsoft.com,login.microsoft.com,azure.microsoft.com,office.microsoft.com
+phishing-network.xyz,client1.phishing-network.xyz,client2.phishing-network.xyz
